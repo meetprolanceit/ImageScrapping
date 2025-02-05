@@ -1,6 +1,5 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
-const cheerio = require('cheerio');
 const { URL } = require('url');
 const path = require('path');
 const fs = require('fs');
@@ -8,7 +7,6 @@ const axios = require('axios');
 const socketIo = require('socket.io');
 const http = require('http');
 const mime = require('mime-types');
-const { log } = require('console');
 const regex = /filename="([^"]+)"/;
 
 const app = express();
@@ -20,18 +18,39 @@ app.set('view engine', 'ejs');
 app.set('views', __dirname + '/views');
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+app.use('/images', express.static(path.join(__dirname, 'images')));
 
 const imagesDir = path.join(__dirname, 'images');
+
 if (!fs.existsSync(imagesDir)) {
     fs.mkdirSync(imagesDir);
 }
-
 app.get('/', (req, res) => {
-    res.render('index.ejs');
-});
+    fs.readdir(path.join(__dirname, 'images'), (err, files) => {
+        if (err) return res.json({ message: err.message });
 
-server.listen(port, () => {
-    console.log(`Server is running on port: ${port}`);
+        const filePromises = files.map((item) => {
+            const imagePath = path.join(__dirname, 'images', item);
+
+            return new Promise((resolve, reject) => {
+                if (item.includes('.svg')) {
+                    fs.readFile(imagePath, 'utf-8', (err, data) => {
+                        if (err) return reject(err);
+                        resolve(data);
+                    });
+                } else {
+                    resolve(item);
+                }
+            });
+        });
+        Promise.all(filePromises)
+            .then((filesPathArray) => {
+                res.render('index.ejs', { filesPathArray });
+            })
+            .catch((err) => {
+                res.json({ message: err.message });
+            });
+    });
 });
 
 app.post('/images', async (req, res) => {
@@ -42,6 +61,10 @@ app.post('/images', async (req, res) => {
     }
 
     try {
+        if (!fs.existsSync(imagesDir)) {
+            fs.mkdirSync(imagesDir);
+        }
+
         const browser = await puppeteer.launch();
         const page = await browser.newPage();
         await page.goto(url, { waitUntil: 'networkidle2' });
@@ -58,7 +81,7 @@ app.post('/images', async (req, res) => {
                     }
                 }
             });
-            return [...uniqueImageUrls];
+            return uniqueImageUrls;
         });
 
         const svgElements = await page.evaluate(() => {
@@ -76,9 +99,6 @@ app.post('/images', async (req, res) => {
         });
 
         const totalImages = imageUrls.length + svgElements.length;
-
-        console.log(`🚀 ~ app.post ~ totalImages:`, totalImages, imageUrls.length, svgElements.length);
-
         io.emit('progress', { progress: 0 });
         let processedImages = 0;
 
@@ -89,23 +109,34 @@ app.post('/images', async (req, res) => {
                     const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
                     const contentType = response.headers['content-type'];
 
-                    console.log(`🚀 ~ app.post ~ response:`, response);
-
                     let fileName = '';
                     const contentDisposition = response.headers['content-disposition'];
                     if (contentDisposition) {
                         let match = contentDisposition.match(regex);
-                        if (match) fileName = match[1];
+                        if (match) {
+                            fileName = match[1].replaceAll('%20', '_');
+                        }
                     } else {
-                        fileName = response.config['url'].split('/').pop();
+                        const fileNameString = response.config['url'].split('?')[0];
+                        fileName = fileNameString.split('/').pop();
+                        fileName = fileName.replaceAll('%20', '_');
                     }
 
                     if (!validExtensions.includes(path.extname(fileName))) {
-                        fileName = `${response.config['url'].split('/').pop()}.${mime.extension(contentType)}`;
-                        console.log(`🚀 ~ app.post ~ fileName:`, fileName);
-                        // fileName = `image_${Math.floor(10000 + Math.random() * 90000) + Date.now()}.${mime.extension(
-                        //     contentType
-                        // )}`;
+                        let fileNameString = response.config['url'].split('/').pop();
+                        const uniqueImageString = [];
+
+                        if (fileNameString.length > 250) {
+                            const diffLength = fileNameString.length - 250;
+                            fileNameString = fileNameString.substring(0, fileNameString.length - diffLength);
+                            if (uniqueImageString.includes(fileNameString)) {
+                                fileNameString = fileNameString + Math.floor(10000 + Math.random() * 90000);
+                                uniqueImageString.push(fileNameString);
+                            } else {
+                                uniqueImageString.push(fileNameString);
+                            }
+                        }
+                        fileName = `${fileNameString}.${mime.extension(contentType)}`;
                     }
 
                     if (validExtensions.includes(path.extname(fileName))) {
@@ -113,7 +144,6 @@ app.post('/images', async (req, res) => {
                         fs.writeFileSync(filePath, response.data);
                         processedImages++;
                         const progress = Math.round((processedImages / totalImages) * 100);
-                        // console.log(`🚀 ~ app.post ~ progress:`, progress, processedImages, totalImages);
                         io.emit('progress', { progress });
                     }
                 } catch (error) {
@@ -123,25 +153,28 @@ app.post('/images', async (req, res) => {
             }
         }
 
-        for (const svgString of svgElements) {
+        for (let [index, svgString] of svgElements.entries()) {
             try {
-                const svgFileName = `svg_${Math.floor(10000 + Math.random() * 90000) + +Date.now()}.svg`;
+                const svgFileName = `svg_${Math.floor(10000 + Math.random() * 90000) + Date.now()}.svg`;
                 const svgFilePath = path.join(imagesDir, svgFileName);
                 fs.writeFileSync(svgFilePath, svgString);
                 processedImages++;
                 const progress = Math.round((processedImages / totalImages) * 100);
-                console.log(`🚀 ~ app.post ~ progress:`, progress, processedImages, totalImages);
                 io.emit('progress', { progress });
             } catch (error) {
-                // console.log(`🚀 ~ app.post ~ SVG error:`, error);
+                console.log(`🚀 ~ app.post ~ SVG error:`, error);
                 return res.json({ message: error.message });
             }
         }
         await browser.close();
         io.emit('done');
-        return res.status(200).json({ message: `${processedImages} images saved successfully` });
+        return res.redirect('/');
     } catch (error) {
         console.log(`🚀 ~ app.post ~ error:`, error);
         return res.json({ message: error.message });
     }
+});
+
+server.listen(port, () => {
+    console.log(`Server is running on port: ${port}`);
 });
