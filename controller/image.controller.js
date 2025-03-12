@@ -20,7 +20,7 @@ const scrappingImages = async (req, res) => {
             fs.mkdirSync(imagesDir);
         }
 
-        const browser = await puppeteer.launch();
+        const browser = await puppeteer.launch({ headless: true });
         const page = await browser.newPage();
         await page.goto(url, { waitUntil: 'networkidle2' });
 
@@ -41,19 +41,28 @@ const scrappingImages = async (req, res) => {
 
         const svgElements = await page.evaluate(() => {
             const svgElement = document.getElementsByTagName('svg');
+
+            console.log(`🚀 ~ svgElements ~ svgElement:`, svgElement);
+
             const uniqueSvgs = new Set();
             const svgArray = [];
-            [...svgElement].forEach((svg) => {
+            [...svgElement].forEach((svg, index) => {
                 const svgString = svg.outerHTML;
                 if (!uniqueSvgs.has(svgString)) {
                     uniqueSvgs.add(svgString);
+
+                    if (svgString.includes('<defs>')) {
+                        console.log(`🚀 ~ [...svgElement].forEach ~ svgString:`, svgString);
+                    }
                     svgArray.push(svgString);
                 }
             });
             return svgArray;
         });
-
         const totalImages = imageUrls.length + svgElements.length;
+
+        console.log(`🚀 ~ scrappingImages ~ svgElements.length:`, svgElements.length);
+
         socketInstance.emit('progress', { progress: 0 });
         let processedImages = 0;
 
@@ -67,10 +76,7 @@ const scrappingImages = async (req, res) => {
                     let fileName = '';
                     const contentDisposition = response.headers['content-disposition'];
                     if (contentDisposition) {
-                        let match = contentDisposition.match(regex);
-                        if (match) {
-                            fileName = match[1].replaceAll('%20', '_');
-                        }
+                        fileName = contentDisposition.split(`"`)[1].replaceAll('%20', '_');
                     } else {
                         const fileNameString = response.config['url'].split('?')[0];
                         fileName = fileNameString.split('/').pop();
@@ -121,7 +127,7 @@ const scrappingImages = async (req, res) => {
                 return res.json({ message: error.message });
             }
         }
-        await browser.close();
+        // await browser.close();
         socketInstance.emit('done');
         return res.redirect('/');
     } catch (error) {

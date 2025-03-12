@@ -3,10 +3,11 @@ const { setSocket } = require('./socket');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const socketIo = require('socket.io');
+
 const app = express();
 const port = 5000;
 const server = http.createServer(app);
-const socketIo = require('socket.io');
 setSocket(socketIo(server));
 
 app.set('view engine', 'ejs');
